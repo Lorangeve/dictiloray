@@ -85,9 +85,15 @@
   (display "  --no-cache      不读缓存（仍会写入）\n" (current-error-port))
   (display "  --refresh       强制联网并覆盖缓存\n" (current-error-port))
   (display "  --cache-db 路径 SQLite 数据库路径\n" (current-error-port))
-  (display "  --clear-cache   清空缓存\n" (current-error-port))
+  (display "  --clear-cache   清空缓存（不重置查词次数 lookup_stats）\n" (current-error-port))
+  (display "  --count-beside  在词条标题旁显示 ×次数（不重复文末「查阅 n 次」）\n"
+           (current-error-port))
+  (display "  --top N         列出查词次数最高的 N 个词（仅统计，不可与查词同用）\n"
+           (current-error-port))
   (display "  -h, --help      帮助\n" (current-error-port))
   (display "\n英文单词另显示音标/例句（dictionaryapi.dev）；--json 中见 dictiloray_en。\n"
+           (current-error-port))
+  (display "单词模式：每次成功拉取释义后累计查词次数（小写归一化），文末与 JSON 字段 lookup_count。\n"
            (current-error-port))
   (display "句子：DeepSeek 默认只译；加 --rare 则要生僻词并查金山（需 DEEPSEEK_API_KEY；\n"
            (current-error-port))
@@ -96,6 +102,12 @@
 
 (define (now-epoch)
   (libc-time-seconds))
+
+(define (parse-positive-int s label)
+  (let ((n (string->number s)))
+    (unless (and n (exact? n) (integer? n) (positive? n))
+      (error "dict: ~a 须为正整数: ~a" label s))
+    n))
 
 (define (parse-args args)
   (let lp ((rest args)
@@ -109,51 +121,72 @@
            (sentence-force? #f)
            (rare? #f)
            (verbose? #f)
+           (count-beside? #f)
+           (top-n #f)
            (pos '()))
     (cond
       ((null? rest)
        (values json? no-cache? refresh? clear? db help? color-pref sentence-force? rare? verbose?
-               (reverse pos)))
+               count-beside? top-n (reverse pos)))
       ((or (string=? (car rest) "-h") (string=? (car rest) "--help"))
        (lp (cdr rest) json? no-cache? refresh? clear? db #t color-pref sentence-force? rare? verbose?
-           pos))
+           count-beside? top-n pos))
       ((string=? (car rest) "--sentence")
-       (lp (cdr rest) json? no-cache? refresh? clear? db help? color-pref #t rare? verbose? pos))
+       (lp (cdr rest) json? no-cache? refresh? clear? db help? color-pref #t rare? verbose?
+           count-beside? top-n pos))
       ((string=? (car rest) "--rare")
        (lp (cdr rest) json? no-cache? refresh? clear? db help? color-pref sentence-force? #t verbose?
-           pos))
+           count-beside? top-n pos))
       ((string=? (car rest) "--color")
        (lp (cdr rest) json? no-cache? refresh? clear? db help? 'always sentence-force? rare? verbose?
-           pos))
+           count-beside? top-n pos))
       ((string=? (car rest) "--no-color")
        (lp (cdr rest) json? no-cache? refresh? clear? db help? 'never sentence-force? rare? verbose?
-           pos))
+           count-beside? top-n pos))
       ((string=? (car rest) "--json")
        (lp (cdr rest) #t no-cache? refresh? clear? db help? color-pref sentence-force? rare? verbose?
-           pos))
+           count-beside? top-n pos))
       ((or (string=? (car rest) "--verbose") (string=? (car rest) "-v"))
-       (lp (cdr rest) json? no-cache? refresh? clear? db help? color-pref sentence-force? rare? #t pos))
+       (lp (cdr rest) json? no-cache? refresh? clear? db help? color-pref sentence-force? rare? #t
+           count-beside? top-n pos))
       ((string=? (car rest) "--no-cache")
-       (lp (cdr rest) json? #t refresh? clear? db help? color-pref sentence-force? rare? verbose? pos))
+       (lp (cdr rest) json? #t refresh? clear? db help? color-pref sentence-force? rare? verbose?
+           count-beside? top-n pos))
       ((string=? (car rest) "--refresh")
-       (lp (cdr rest) json? no-cache? #t clear? db help? color-pref sentence-force? rare? verbose? pos))
+       (lp (cdr rest) json? no-cache? #t clear? db help? color-pref sentence-force? rare? verbose?
+           count-beside? top-n pos))
       ((string=? (car rest) "--clear-cache")
-       (lp (cdr rest) json? no-cache? refresh? #t db help? color-pref sentence-force? rare? verbose? pos))
+       (lp (cdr rest) json? no-cache? refresh? #t db help? color-pref sentence-force? rare? verbose?
+           count-beside? top-n pos))
+      ((string=? (car rest) "--count-beside")
+       (lp (cdr rest) json? no-cache? refresh? clear? db help? color-pref sentence-force? rare? verbose?
+           #t top-n pos))
+      ((string=? (car rest) "--top")
+       (if (null? (cdr rest))
+           (error "dict: --top 需要正整数参数")
+           (lp (cddr rest) json? no-cache? refresh? clear? db help? color-pref sentence-force? rare?
+               verbose? count-beside? (parse-positive-int (cadr rest) "--top") pos)))
+      ((string-prefix? "--top=" (car rest))
+       (let ((s (substring (car rest) (string-length "--top="))))
+         (when (string-null? s)
+           (error "dict: --top= 需要正整数"))
+         (lp (cdr rest) json? no-cache? refresh? clear? db help? color-pref sentence-force? rare?
+             verbose? count-beside? (parse-positive-int s "--top=") pos)))
       ((string=? (car rest) "--cache-db")
        (if (null? (cdr rest))
            (error "dict: --cache-db 需要路径参数")
            (lp (cddr rest) json? no-cache? refresh? clear? (cadr rest) help? color-pref sentence-force?
-               rare? verbose? pos)))
+               rare? verbose? count-beside? top-n pos)))
       ((string-prefix? "--cache-db=" (car rest))
        (let ((p (substring (car rest) (string-length "--cache-db="))))
          (when (string-null? p)
            (error "dict: --cache-db= 需要路径"))
          (lp (cdr rest) json? no-cache? refresh? clear? p help? color-pref sentence-force? rare? verbose?
-             pos)))
+             count-beside? top-n pos)))
       ((string-prefix? "--" (car rest))
        (error "dict: 未知选项" (car rest)))
       (else (lp (cdr rest) json? no-cache? refresh? clear? db help? color-pref sentence-force? rare?
-                verbose? (cons (car rest) pos))))))
+                verbose? count-beside? top-n (cons (car rest) pos))))))
 
 (define (no-color-env?)
   (let ((v (libc-getenv "NO_COLOR")))
@@ -256,8 +289,9 @@
                        (ex-cap (if verbose? 48 8))
                        (examples (if (dictapi-entries-vector? en)
                                      (dictapi-collect-examples en ex-cap)
-                                     '())))
-                  (list data entry phonetics examples)))))))
+                                     '()))
+                       (cnt (lookup-count-bump! db (normalize-key word) now)))
+                  (list data entry phonetics examples cnt)))))))
 
 (define* (json-en-wrap phonetics examples)
   (if (and (null? phonetics) (null? examples))
@@ -269,35 +303,68 @@
 (define (print-word-lookup--json word parts)
   (and parts
        (match parts
-         ((data entry ph ex)
-          (append (list (cons "query" word) (cons "iciba" data))
+         ((data entry ph ex cnt)
+          (append (list (cons "query" word)
+                        (cons "lookup_count" cnt)
+                        (cons "iciba" data))
                   (json-en-wrap ph ex))))))
 
-(define (print-word-lookup--text word parts color? verbose?)
+(define* (format-lookup-count-line cnt #:key (color? #f))
+  (let ((s (format #f "查阅 ~a 次" cnt)))
+    (if color?
+        (string-append "\x1b[2m" s "\x1b[0m")
+        s)))
+
+(define* (format-query-head-with-count word cnt #:key (color? #f) (count-beside? #f))
+  (if count-beside?
+      (string-append word
+                     (if color?
+                         (string-append "\x1b[2m" (format #f " ×~a" cnt) "\x1b[0m")
+                         (format #f " ×~a" cnt)))
+      word))
+
+(define (print-word-lookup--text word parts color? verbose? count-beside? db)
   (if (not parts)
       (format #t "~a: (请求失败)\n" word)
       (match parts
-        ((data entry ph ex)
+        ((data entry ph ex cnt)
          (if (not entry)
              (begin
                (format (current-error-port) "未解析到释义 (~a): ~a\n" word data)
-               (format #t "~a: (无释义)\n" word))
+               (format #t "~a: (无释义)\n"
+                       (format-query-head-with-count word cnt #:color? color?
+                                                      #:count-beside? count-beside?))
+               (unless count-beside?
+                 (display (format-lookup-count-line cnt #:color? color?))
+                 (newline)))
              (begin
                (display (format-lookup-result word data
                                               #:color? color?
                                               #:phonetics ph
                                               #:examples ex
-                                              #:verbose? verbose?))
+                                              #:verbose? verbose?
+                                              #:lookup-count-beside? count-beside?
+                                              #:lookup-count (if count-beside? cnt #f)
+                                              #:lookup-count-get
+                                              (if (and count-beside? verbose?)
+                                                  (lambda (k)
+                                                    (if (string? k) (lookup-count-get db k) 0))
+                                                  #f)))
                (newline)
+               (unless count-beside?
+                 (display (format-lookup-count-line cnt #:color? color?))
+                 (newline))
                (newline)))))))
 
-(define* (print-word-lookup word db no-cache? refresh? now color? json? verbose?)
+(define* (print-word-lookup word db no-cache? refresh? now color? json? verbose?
+          count-beside?)
   (let ((parts (word-lookup-parts db word no-cache? refresh? now verbose?)))
     (if json?
         (print-word-lookup--json word parts)
-        (print-word-lookup--text word parts color? verbose?))))
+        (print-word-lookup--text word parts color? verbose? count-beside? db))))
 
-(define (run-sentence-mode db text json? no-cache? refresh? color-pref now rare? verbose?)
+(define (run-sentence-mode db text json? no-cache? refresh? color-pref now rare? verbose?
+          count-beside?)
   (let ((color? (use-terminal-color? color-pref))
         (key-ok? (deepseek-api-key-from-env)))
     (unless key-ok?
@@ -314,7 +381,8 @@
             (let* ((word-objs
                     (if rare?
                         (map (lambda (w)
-                               (or (print-word-lookup w db no-cache? refresh? now color? #t verbose?)
+                               (or (print-word-lookup w db no-cache? refresh? now color? #t verbose?
+                                                     count-beside?)
                                    (list (cons "query" w)
                                          (cons "iciba" '())
                                          (cons "error" "lookup_failed"))))
@@ -348,15 +416,17 @@
                 (newline)
                 (for-each
                  (lambda (w)
-                   (print-word-lookup w db no-cache? refresh? now color? #f verbose?))
+                   (print-word-lookup w db no-cache? refresh? now color? #f verbose?
+                                     count-beside?))
                  rws))))))))
 
-(define (run-word-mode--json word data ph ex verbose?)
-  (let* ((payload (json-with-en data ph ex))
-         (out (if verbose? (cons (cons "query" word) payload) payload)))
+(define (run-word-mode--json word data ph ex cnt verbose?)
+  (let* ((payload0 (json-with-en data ph ex))
+         (payload1 (cons (cons "lookup_count" cnt) payload0))
+         (out (if verbose? (cons (cons "query" word) payload1) payload1)))
     (display (scm->json-pretty-string out))))
 
-(define (run-word-mode--text word data entry ph ex color? verbose?)
+(define (run-word-mode--text word data entry ph ex cnt color? verbose? count-beside? db)
   (unless entry
     (format (current-error-port) "未解析到释义: ~a\n" data)
     (primitive-exit 1))
@@ -364,22 +434,52 @@
                                  #:color? color?
                                  #:phonetics ph
                                  #:examples ex
-                                 #:verbose? verbose?))
-  (newline))
+                                 #:verbose? verbose?
+                                 #:lookup-count-beside? count-beside?
+                                 #:lookup-count (if count-beside? cnt #f)
+                                 #:lookup-count-get
+                                 (if (and count-beside? verbose?)
+                                     (lambda (k) (if (string? k) (lookup-count-get db k) 0))
+                                     #f)))
+  (newline)
+  (unless count-beside?
+    (display (format-lookup-count-line cnt #:color? color?))
+    (newline)))
 
-(define (run-word-mode db word json? no-cache? refresh? color-pref now verbose?)
+(define (run-top-stats db n json? color-pref)
+  (let ((rows (lookup-stats-top db n))
+        (color? (use-terminal-color? color-pref)))
+    (if json?
+        (display
+         (scm->json-pretty-string
+          (list (cons "top"
+                        (list->vector
+                         (map (lambda (p)
+                                (list (cons "word" (car p)) (cons "count" (cdr p))))
+                              rows))))))
+        (begin
+          (display (format-section-banner (format #f "高频查词（前 ~a）" n) #:color? color?))
+          (newline)
+          (if (null? rows)
+              (display "（暂无记录）\n")
+              (for-each
+               (lambda (p) (format #t "  ~8a  ~a\n" (cdr p) (car p)))
+               rows))))))
+
+(define (run-word-mode db word json? no-cache? refresh? color-pref now verbose? count-beside?)
   (let ((color? (use-terminal-color? color-pref))
         (parts (word-lookup-parts db word no-cache? refresh? now verbose?)))
     (unless parts
       (primitive-exit 1))
     (match parts
-      ((data entry ph ex)
+      ((data entry ph ex cnt)
        (if json?
-           (run-word-mode--json word data ph ex verbose?)
-           (run-word-mode--text word data entry ph ex color? verbose?))))))
+           (run-word-mode--json word data ph ex cnt verbose?)
+           (run-word-mode--text word data entry ph ex cnt color? verbose? count-beside? db))))))
 
 (define (main)
-  (receive (json? no-cache? refresh? clear? db-path help? color-pref sentence-force? rare? verbose? pos)
+  (receive (json? no-cache? refresh? clear? db-path help? color-pref sentence-force? rare? verbose?
+            count-beside? top-n pos)
       (parse-args (cdr (program-arguments)))
     (when help?
       (usage)
@@ -390,6 +490,13 @@
         (let ((n (cache-clear! db)))
           (format (current-error-port) "已删除 ~a 条缓存。\n" n)
           (primitive-exit 0)))
+      (when (and top-n (pair? pos))
+        (display "dict: --top 与查词不能同时使用\n" (current-error-port))
+        (primitive-exit 2))
+      (when top-n
+        (ensure-cache-parent-dir db)
+        (run-top-stats db top-n json? color-pref)
+        (primitive-exit 0))
       (when (null? pos)
         (usage)
         (primitive-exit 2))
@@ -400,7 +507,9 @@
              (now (now-epoch)))
         (ensure-cache-parent-dir db)
         (if (sentence-input? text sentence-force?)
-            (run-sentence-mode db text json? no-cache? refresh? color-pref now rare? verbose?)
-            (run-word-mode db text json? no-cache? refresh? color-pref now verbose?))))))
+            (run-sentence-mode db text json? no-cache? refresh? color-pref now rare? verbose?
+                               count-beside?)
+            (run-word-mode db text json? no-cache? refresh? color-pref now verbose?
+                           count-beside?))))))
 
 (main)

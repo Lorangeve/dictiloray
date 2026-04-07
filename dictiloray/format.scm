@@ -19,6 +19,10 @@
 (define (cwrap seq s)
   (string-append seq s %rst))
 
+(define (format-lookup-count-suffix n color?)
+  (let ((s (format #f " ×~a" n)))
+    (if color? (cwrap %dim s) s)))
+
 (define* (format-section-banner title #:key (color? #f))
   (let* ((n (string-length title))
          (u-len (min (max n 2) 56)))
@@ -81,7 +85,8 @@
          (any (lambda (b) (not (null? (block-glosses b))))
               (vector->list means)))))
 
-(define* (format-entry item #:key (color? #f) (phonetics '()) (examples '()))
+(define* (format-entry item #:key (color? #f) (phonetics '()) (examples '())
+                        (lookup-count-beside? #f) (lookup-count #f))
   (unless (pair? item) (error "format-entry: bad row"))
   (let* ((rows '())
          (emit (lambda (s) (set! rows (append rows (list s)))))
@@ -95,7 +100,13 @@
     (cond ((alist-ref item "key")
            => (lambda (k)
                 (when (and (string? k) (not (string-null? k)))
-                  (emit (fmt-key k))))))
+                  (emit
+                   (let ((head (fmt-key k)))
+                     (if (and lookup-count-beside?
+                              (number? lookup-count)
+                              (> lookup-count 0))
+                         (string-append head (format-lookup-count-suffix lookup-count color?))
+                         head)))))))
     (when (pair? phonetics)
       (emit (string-append (fmt-lbl "音标") "  "
                            (fmt-ipa (string-join phonetics " · ")))))
@@ -132,7 +143,8 @@
       (else
        (string-join rows sep))))))
 
-(define* (format-lookup-result word data #:key (color? #f) (phonetics '()) (examples '()) (verbose? #f))
+(define* (format-lookup-result word data #:key (color? #f) (phonetics '()) (examples '()) (verbose? #f)
+          (lookup-count-beside? #f) (lookup-count #f) (lookup-count-get #f))
   (let ((best (pick-best-entry word data))
         (msg (and (pair? data) (alist-ref data "message"))))
     (cond
@@ -161,7 +173,13 @@
                                              (if (and best-key
                                                       (equal? (entry-key-normalized item) best-key))
                                                  examples
-                                                 '()))
+                                                 '())
+                                             #:lookup-count-beside? lookup-count-beside?
+                                             #:lookup-count
+                                             (if (and lookup-count-beside? lookup-count-get)
+                                                 (let ((k (entry-key-normalized item)))
+                                                   (if (string? k) (lookup-count-get k) 0))
+                                                 0))
                                acc)
                               acc)))))
               between)
@@ -169,5 +187,7 @@
                  (format-entry best
                                #:color? color?
                                #:phonetics phonetics
-                               #:examples examples)
+                               #:examples examples
+                               #:lookup-count-beside? lookup-count-beside?
+                               #:lookup-count (if lookup-count-beside? lookup-count #f))
                  "(无释义)")))))))

@@ -8,7 +8,10 @@
   #:export (cache-get
             cache-set!
             cache-clear!
-            ensure-cache-parent-dir))
+            ensure-cache-parent-dir
+            lookup-count-bump!
+            lookup-count-get
+            lookup-stats-top))
 
 (define SQLITE-OK 0)
 (define SQLITE-ROW 100)
@@ -22,6 +25,7 @@
 (define %sqlite3-bind-int64 #f)
 (define %sqlite3-step #f)
 (define %sqlite3-column-text #f)
+(define %sqlite3-column-int64 #f)
 (define %sqlite3-finalize #f)
 (define %sqlite3-changes #f)
 (define %sqlite3-exec #f)
@@ -89,6 +93,10 @@ Optional override: DICTILORAY_SQLITE3=/path/to/libsqlite3.so.0"
     (set! %sqlite3-column-text
           (pointer->procedure '*
             (dynamic-func "sqlite3_column_text" %lib)
+            (list '* int)))
+    (set! %sqlite3-column-int64
+          (pointer->procedure int64
+            (dynamic-func "sqlite3_column_int64" %lib)
             (list '* int)))
     (set! %sqlite3-finalize
           (pointer->procedure int
@@ -164,7 +172,13 @@ Optional override: DICTILORAY_SQLITE3=/path/to/libsqlite3.so.0"
               "CREATE TABLE IF NOT EXISTS entries ("
               "query_key TEXT PRIMARY KEY,"
               "payload TEXT NOT NULL,"
-              "fetched_at INTEGER NOT NULL)")))
+              "fetched_at INTEGER NOT NULL)"))
+  (exec-ddl db
+            (string-append
+              "CREATE TABLE IF NOT EXISTS lookup_stats ("
+              "word_key TEXT PRIMARY KEY,"
+              "count INTEGER NOT NULL DEFAULT 0,"
+              "last_lookup_at INTEGER NOT NULL)")))
 
 (define (cache-get path query-key)
   (with-db path
@@ -237,3 +251,102 @@ Optional override: DICTILORAY_SQLITE3=/path/to/libsqlite3.so.0"
       (ensure-schema db)
       (exec-ddl db "DELETE FROM entries")
       (%sqlite3-changes db))))
+
+(define (%lookup-count-select-db db word-key)
+  (let* ((sql "SELECT count FROM lookup_stats WHERE word_key = ?1")
+         (stmt-bv (make-bytevector (sizeof '*) 0))
+         (rc (%sqlite3-prepare-v2 db (string->pointer sql) -1
+                                  (bytevector->pointer stmt-bv)
+                                  %null-pointer)))
+    (unless (zero? rc)
+      (error "lookup-count: prepare SELECT failed" rc))
+    (let ((stmt (bytevector-native-pointer-ref stmt-bv 0)))
+      (dynamic-wind
+        (lambda () #t)
+        (lambda ()
+          (unless (zero? (%sqlite3-bind-text stmt 1 (string->pointer word-key)
+                                               -1 SQLITE-TRANSIENT))
+            (error "lookup-count: bind failed"))
+          (let ((s (%sqlite3-step stmt)))
+            (cond
+              ((= s SQLITE-ROW)
+               (%sqlite3-column-int64 stmt 0))
+              ((= s SQLITE-DONE) 0)
+              (else (error "lookup-count: step SELECT failed" s)))))
+        (lambda ()
+          (%sqlite3-finalize stmt))))))
+
+(define (lookup-count-get path word-key)
+  (with-db path
+    (lambda (db)
+      (ensure-schema db)
+      (%lookup-count-select-db db word-key))))
+
+(define (lookup-count-bump! path word-key at)
+  "Increment lookup count for word-key; return new count."
+  (with-db path
+    (lambda (db)
+      (ensure-schema db)
+      (let* ((sql (string-append
+                    "INSERT INTO lookup_stats (word_key, count, last_lookup_at) "
+                    "VALUES (?1, 1, ?2) "
+                    "ON CONFLICT(word_key) DO UPDATE SET "
+                    "count = count + 1, "
+                    "last_lookup_at = excluded.last_lookup_at"))
+             (stmt-bv (make-bytevector (sizeof '*) 0))
+             (rc (%sqlite3-prepare-v2 db (string->pointer sql) -1
+                                      (bytevector->pointer stmt-bv)
+                                      %null-pointer)))
+        (unless (zero? rc)
+          (error "lookup-count-bump!: prepare failed" rc))
+        (let ((stmt (bytevector-native-pointer-ref stmt-bv 0)))
+          (dynamic-wind
+            (lambda () #t)
+            (lambda ()
+              (unless (zero? (%sqlite3-bind-text stmt 1 (string->pointer word-key)
+                                                   -1 SQLITE-TRANSIENT))
+                (error "lookup-count-bump!: bind key failed"))
+              (unless (zero? (%sqlite3-bind-int64 stmt 2 at))
+                (error "lookup-count-bump!: bind time failed"))
+              (let ((s (%sqlite3-step stmt)))
+                (unless (= s SQLITE-DONE)
+                  (error "lookup-count-bump!: step failed" s))))
+            (lambda ()
+              (%sqlite3-finalize stmt)))))
+      (%lookup-count-select-db db word-key))))
+
+(define (lookup-stats-top path limit)
+  "Return alist ((word_key . count) ...) ordered by count desc, then word_key asc."
+  (unless (and (integer? limit) (positive? limit))
+    (error "lookup-stats-top: limit must be a positive integer" limit))
+  (with-db path
+    (lambda (db)
+      (ensure-schema db)
+      (let* ((sql (string-append
+                    "SELECT word_key, count FROM lookup_stats "
+                    "ORDER BY count DESC, word_key ASC LIMIT ?1"))
+             (stmt-bv (make-bytevector (sizeof '*) 0))
+             (rc (%sqlite3-prepare-v2 db (string->pointer sql) -1
+                                      (bytevector->pointer stmt-bv)
+                                      %null-pointer)))
+        (unless (zero? rc)
+          (error "lookup-stats-top: prepare failed" rc))
+        (let ((stmt (bytevector-native-pointer-ref stmt-bv 0)))
+          (dynamic-wind
+            (lambda () #t)
+            (lambda ()
+              (unless (zero? (%sqlite3-bind-int64 stmt 1 limit))
+                (error "lookup-stats-top: bind failed"))
+              (let collect ((acc '()))
+                (let ((s (%sqlite3-step stmt)))
+                  (cond
+                    ((= s SQLITE-ROW)
+                     (let ((wp (%sqlite3-column-text stmt 0))
+                           (c (%sqlite3-column-int64 stmt 1)))
+                       (if (null-pointer? wp)
+                           (collect acc)
+                           (collect (cons (cons (pointer->string wp) c) acc)))))
+                    ((= s SQLITE-DONE) (reverse acc))
+                    (else (error "lookup-stats-top: step failed" s))))))
+            (lambda ()
+              (%sqlite3-finalize stmt))))))))

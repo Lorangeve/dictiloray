@@ -1,4 +1,5 @@
-#!/usr/bin/env -S guile --no-auto-compile -s
+#!/bin/sh
+DICTILORAY_ROOT="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"; export DICTILORAY_ROOT; DICTILORAY_SCRIPT="$DICTILORAY_ROOT/$(basename "$0")"; export DICTILORAY_SCRIPT; exec guile --no-auto-compile -c "(set! %compile-fallback-path #f) (set! %load-path (cons (getenv \"DICTILORAY_ROOT\") %load-path)) (let ((self (getenv \"DICTILORAY_SCRIPT\"))) (set-program-arguments (cons self (cdr (program-arguments)))) (primitive-load self))" "$@"
 !#
 
 ;;; CLI: 金山词霸移动接口 + SQLite 缓存（纯 Guile）。
@@ -78,7 +79,7 @@
   (display "  --rare          句子模式：生僻词列表 + 金山释义（默认关闭，仅译文）\n"
            (current-error-port))
   (display "  --json          输出 JSON（单行 + 换行，可管道到 jq）\n" (current-error-port))
-  (display "  --verbose, -v   更全：更多 iCiba 候选条数与英文例句；文本模式列出全部建议词条\n"
+  (display "  --verbose, -v   更全：更多 iCiba 候选；文本模式列出全部建议词条并显示英文例句（默认不显示例句）\n"
            (current-error-port))
   (display "  --color         强制 ANSI 颜色（即使 stdout 非终端）\n" (current-error-port))
   (display "  --no-color      禁用颜色（亦遵守环境变量 NO_COLOR）\n" (current-error-port))
@@ -86,14 +87,14 @@
   (display "  --refresh       强制联网并覆盖缓存\n" (current-error-port))
   (display "  --cache-db 路径 SQLite 数据库路径\n" (current-error-port))
   (display "  --clear-cache   清空缓存（不重置查词次数 lookup_stats）\n" (current-error-port))
-  (display "  --count-beside  在词条标题旁显示 ×次数（不重复文末「查阅 n 次」）\n"
+  (display "  --no-count-beside  文末显示「查阅 n 次」，不在词条标题旁显示 ×次数\n"
            (current-error-port))
   (display "  --top N         列出查词次数最高的 N 个词（仅统计，不可与查词同用）\n"
            (current-error-port))
   (display "  -h, --help      帮助\n" (current-error-port))
   (display "\n英文单词另显示音标/例句（dictionaryapi.dev）；--json 中见 dictiloray_en。\n"
            (current-error-port))
-  (display "单词模式：每次成功拉取释义后累计查词次数（小写归一化），文末与 JSON 字段 lookup_count。\n"
+  (display "单词模式：每次成功拉取释义后累计查词次数（小写归一化），默认在词条标题右侧显示 ×N；JSON 字段 lookup_count。\n"
            (current-error-port))
   (display "句子：DeepSeek 默认只译；加 --rare 则要生僻词并查金山（需 DEEPSEEK_API_KEY；\n"
            (current-error-port))
@@ -121,7 +122,7 @@
            (sentence-force? #f)
            (rare? #f)
            (verbose? #f)
-           (count-beside? #f)
+           (count-beside? #t)
            (top-n #f)
            (pos '()))
     (cond
@@ -158,9 +159,9 @@
       ((string=? (car rest) "--clear-cache")
        (lp (cdr rest) json? no-cache? refresh? #t db help? color-pref sentence-force? rare? verbose?
            count-beside? top-n pos))
-      ((string=? (car rest) "--count-beside")
+      ((string=? (car rest) "--no-count-beside")
        (lp (cdr rest) json? no-cache? refresh? clear? db help? color-pref sentence-force? rare? verbose?
-           #t top-n pos))
+           #f top-n pos))
       ((string=? (car rest) "--top")
        (if (null? (cdr rest))
            (error "dict: --top 需要正整数参数")
@@ -286,9 +287,8 @@
                        (phonetics (if (dictapi-entries-vector? en)
                                       (dictapi-collect-phonetics en)
                                       '()))
-                       (ex-cap (if verbose? 48 8))
-                       (examples (if (dictapi-entries-vector? en)
-                                     (dictapi-collect-examples en ex-cap)
+                       (examples (if (and verbose? (dictapi-entries-vector? en))
+                                     (dictapi-collect-examples en 48)
                                      '()))
                        (cnt (lookup-count-bump! db (normalize-key word) now)))
                   (list data entry phonetics examples cnt)))))))

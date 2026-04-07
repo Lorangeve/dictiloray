@@ -2,7 +2,8 @@
 
 (define-module (dictiloray libc-mini)
   #:use-module (system foreign)
-  #:export (libc-getenv libc-time-seconds libc-file-exists? libc-mkdir))
+  #:export (libc-getenv libc-time-seconds libc-file-exists? libc-mkdir
+            libc-isatty))
 
 (define %libc #f)
 
@@ -35,3 +36,9 @@
   (ensure-libc!)
   (let ((mk (pointer->procedure int (dynamic-func "mkdir" %libc) (list '* int))))
     (zero? (mk (string->pointer path) mode))))
+
+(define (libc-isatty fd)
+  "非零若 fd 为交互式终端（用于决定是否启用 ANSI 颜色）。"
+  (ensure-libc!)
+  (let ((f (pointer->procedure int (dynamic-func "isatty" %libc) (list int))))
+    (not (zero? (f fd)))))

@@ -3,9 +3,9 @@
 ;;; Arrays: vectors. JSON null: unique json-null value (not '()).
 
 (define-module (dictiloray json-minimal)
-  #:use-module (ice-9 rdelim)
+  ;; 勿引入 (ice-9 rdelim)：其 read-string 会遮蔽 R6RS 的 (read-string count port)，
+  ;; 导致解析字面量 true/false/null 时把 count 当成「分隔符」而崩溃。
   #:use-module (rnrs io ports)
-  #:use-module (srfi srfi-1)
   #:export (json-null
             json-null?
             json-string->scm
@@ -46,6 +46,32 @@
                   (else (+ 10 (- (char->integer (char-downcase c))
                                  (char->integer #\a)))))))))))
 
+(define (json-codepoint->char n)
+  "JSON \\u 标量：拒绝孤立代理码点，其它非法值用 U+FFFD。"
+  (if (and (integer? n)
+           (>= n 0)
+           (<= n #x10FFFF)
+           (not (and (>= n #xD800) (<= n #xDFFF))))
+      (integer->char n)
+      (integer->char #xfffd)))
+
+(define (read-json-unicode-escape port)
+  "读取 \\uXXXX；若为 UTF-16 高代理则再读 \\uXXXX 并合并为补充平面字符。"
+  (let ((u1 (read-hex-4 port)))
+    (if (and (>= u1 #xD800) (<= u1 #xDBFF))
+        (let ((c0 (read-char port)))
+          (if (or (eof-object? c0) (not (eqv? c0 #\\)))
+              (json-codepoint->char #xfffd)
+              (let ((c1 (read-char port)))
+                (if (or (eof-object? c1) (not (eqv? c1 #\u)))
+                    (json-codepoint->char #xfffd)
+                    (let ((lo (read-hex-4 port)))
+                      (if (and (>= lo #xDC00) (<= lo #xDFFF))
+                          (json-codepoint->char
+                           (+ #x10000 (* (- u1 #xD800) 1024) (- lo #xDC00)))
+                          (json-codepoint->char #xfffd)))))))
+        (json-codepoint->char u1))))
+
 (define (read-json-string port)
   (expect-char port #\")
   (let lp ((acc '()))
@@ -66,8 +92,7 @@
            ((eqv? e #\r) (lp (cons #\cr acc)))
            ((eqv? e #\t) (lp (cons #\ht acc)))
            ((eqv? e #\u)
-            (let ((cp (read-hex-4 port)))
-              (lp (cons (integer->char cp) acc))))
+            (lp (cons (read-json-unicode-escape port) acc)))
            (else (error "json: bad escape" e)))))
        (else (lp (cons c acc)))))))
 
@@ -133,23 +158,29 @@
      ((char-numeric? c) (read-json-number port))
      ((eqv? c #\t)
       (read-char port)
-      (unless (equal? (read-string 3 port) "rue")
+      (unless (equal? (get-string-n port 3) "rue")
         (error "json: true"))
       #t)
      ((eqv? c #\f)
       (read-char port)
-      (unless (equal? (read-string 4 port) "alse")
+      (unless (equal? (get-string-n port 4) "alse")
         (error "json: false"))
       #f)
      ((eqv? c #\n)
       (read-char port)
-      (unless (equal? (read-string 3 port) "ull")
+      (unless (equal? (get-string-n port 3) "ull")
         (error "json: null"))
       json-null)
      (else (error "json: bad token" c)))))
 
+(define (json-strip-utf8-bom str)
+  (if (and (> (string-length str) 0)
+           (eqv? (string-ref str 0) (integer->char #xfeff)))
+      (substring str 1 (string-length str))
+      str))
+
 (define (json-string->scm str)
-  (read-json (open-input-string str)))
+  (read-json (open-input-string (json-strip-utf8-bom str))))
 
 (define (write-json-string str port)
   (write-char #\" port)

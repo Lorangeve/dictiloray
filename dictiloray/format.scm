@@ -3,7 +3,7 @@
 (define-module (dictiloray format)
   #:use-module (srfi srfi-1)
   #:use-module (srfi srfi-13)
-  #:export (pick-best-entry format-entry))
+  #:export (pick-best-entry format-entry format-section-banner format-lookup-result))
 
 (define %esc (string #\x1b))
 
@@ -12,13 +12,19 @@
 (define %key (string-append %esc "[1;96m"))   ; bold bright cyan
 (define %par (string-append %esc "[2;39m"))   ; dim default
 (define %pos (string-append %esc "[1;33m"))   ; bold yellow 词性
-(define %muted (string-append %esc "[90m"))   ; bright black / gray
 (define %empty (string-append %esc "[2;31m")) ; dim red (无释义)
 (define %ipa (string-append %esc "[1;35m"))   ; bold magenta 音标
-(define %sec (string-append %esc "[1;90m"))   ; bright black 小节标题
+(define %lbl (string-append %esc "[1;97m"))   ; bold bright white 字段标签（深色背景下可读）
 
 (define (cwrap seq s)
   (string-append seq s %rst))
+
+(define* (format-section-banner title #:key (color? #f))
+  (let* ((n (string-length title))
+         (u-len (min (max n 2) 56)))
+    (if color?
+        (string-append (cwrap %key title) "\n" (cwrap %dim (make-string u-len #\─)))
+        (string-append title "\n" (make-string u-len #\-)))))
 
 (define (alist-ref al key)
   (cond ((assoc key al) => cdr) (else #f)))
@@ -51,6 +57,11 @@
             ((pred (vector-ref vec i)) (vector-ref vec i))
             (else (lp (1+ i)))))))
 
+(define (entry-key-normalized item)
+  (and (pair? item)
+       (let ((k (alist-ref item "key")))
+         (and (string? k) (string-downcase (string-trim-both k))))))
+
 (define (block-glosses block)
   "从一条 means 块取出非空义项字符串列表。"
   (if (not (pair? block))
@@ -78,17 +89,16 @@
          (fmt-par (if color? (lambda (s) (cwrap %par s)) identity))
          (fmt-pos (if color? (lambda (s) (cwrap %pos s)) identity))
          (fmt-ipa (if color? (lambda (s) (cwrap %ipa s)) identity))
-         (fmt-sec (if color? (lambda (s) (cwrap %sec s)) identity))
-         (indent (if color? (string-append %muted "  │ " %rst) "  │ "))
-         (sep (if color?
-                (string-append "\n" %dim "  ───────────────────────────────" %rst "\n")
-                "\n\n")))
+         (fmt-lbl (if color? (lambda (s) (cwrap %lbl s)) identity))
+         (indent "    ")
+         (sep "\n\n"))
     (cond ((alist-ref item "key")
            => (lambda (k)
                 (when (and (string? k) (not (string-null? k)))
                   (emit (fmt-key k))))))
     (when (pair? phonetics)
-      (emit (fmt-ipa (string-append "音标  " (string-join phonetics " · ")))))
+      (emit (string-append (fmt-lbl "音标") "  "
+                           (fmt-ipa (string-join phonetics " · ")))))
     (cond ((alist-ref item "paraphrase")
            => (lambda (p)
                 (when (and (not (entry-has-structured-means? item))
@@ -112,7 +122,7 @@
                                     (string-append (fmt-pos part) " " joined))))))))
               (lp (1+ i)))))))
     (when (pair? examples)
-      (emit (fmt-sec "例句"))
+      (emit (fmt-lbl "例句"))
       (for-each (lambda (ex) (emit (string-append indent ex))) examples))
     (cond
       ((null? rows)
@@ -120,4 +130,44 @@
       ((null? (cdr rows))
        (car rows))
       (else
-       (string-append (car rows) sep (string-join (cdr rows) "\n")))))))
+       (string-join rows sep))))))
+
+(define* (format-lookup-result word data #:key (color? #f) (phonetics '()) (examples '()) (verbose? #f))
+  (let ((best (pick-best-entry word data))
+        (msg (and (pair? data) (alist-ref data "message"))))
+    (cond
+      ((not (vector? msg)) "(无释义)")
+      ((zero? (vector-length msg)) "(无释义)")
+      (else
+       (let ((best-key (and best (entry-key-normalized best)))
+             (between "\n\n\n"))
+         (if verbose?
+             (string-join
+              (let lp ((i 0) (acc '()))
+                (if (>= i (vector-length msg))
+                    (reverse acc)
+                    (let ((item (vector-ref msg i)))
+                      (lp (1+ i)
+                          (if (pair? item)
+                              (cons
+                               (format-entry item
+                                             #:color? color?
+                                             #:phonetics
+                                             (if (and best-key
+                                                      (equal? (entry-key-normalized item) best-key))
+                                                 phonetics
+                                                 '())
+                                             #:examples
+                                             (if (and best-key
+                                                      (equal? (entry-key-normalized item) best-key))
+                                                 examples
+                                                 '()))
+                               acc)
+                              acc)))))
+              between)
+             (if best
+                 (format-entry best
+                               #:color? color?
+                               #:phonetics phonetics
+                               #:examples examples)
+                 "(无释义)")))))))

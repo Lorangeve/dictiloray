@@ -24,11 +24,14 @@
           (error "iciba: curl 失败（请确认已安装 curl 且可访问网络）" st))
         body))))
 
-(define (iciba-fetch-suggest word)
+(define* (iciba-fetch-suggest word #:key (nums 8))
   (let* ((enc (uri-encode word))
+         (n (max 1 (min nums 50)))
          (uri (string-append
                 "https://dict-mobile.iciba.com/interface/index.php?"
-                "c=word&m=getsuggest&is_need_mean=1&nums=8&word="
+                "c=word&m=getsuggest&is_need_mean=1&nums="
+                (number->string n)
+                "&word="
                 enc)))
     (catch
       'gnutls-not-available

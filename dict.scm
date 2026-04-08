@@ -1,5 +1,10 @@
 #!/bin/sh
-DICTILORAY_ROOT="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"; export DICTILORAY_ROOT; DICTILORAY_SCRIPT="$DICTILORAY_ROOT/$(basename "$0")"; export DICTILORAY_SCRIPT; exec guile --no-auto-compile -c "(set! %compile-fallback-path #f) (set! %load-path (cons (getenv \"DICTILORAY_ROOT\") %load-path)) (let ((self (getenv \"DICTILORAY_SCRIPT\"))) (set-program-arguments (cons self (cdr (program-arguments)))) (primitive-load self))" "$@"
+# Resolve symlinks (e.g. ~/.local/bin/dict -> .../dictiloray/dict.scm)
+DICTILORAY_SCRIPT="$(d="$0"; case $d in /*);; *) d="$(pwd)/$d";; esac; if command -v realpath >/dev/null 2>&1; then realpath "$d"; else readlink -f "$d" 2>/dev/null || printf '%s\n' "$d"; fi)"
+export DICTILORAY_SCRIPT
+DICTILORAY_ROOT="$(dirname "$DICTILORAY_SCRIPT")"
+export DICTILORAY_ROOT
+exec guile --no-auto-compile -c "(set! %compile-fallback-path #f) (set! %load-path (cons (getenv \"DICTILORAY_ROOT\") %load-path)) (let ((self (getenv \"DICTILORAY_SCRIPT\"))) (set-program-arguments (cons self (cdr (program-arguments)))) (primitive-load self))" "$@"
 !#
 
 ;;; CLI: 金山词霸移动接口 + SQLite 缓存（纯 Guile）。
